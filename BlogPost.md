@@ -216,7 +216,7 @@ gist LocationService
         lastKnownLocationListeners.add(listener);
     }
     
-    public void removeLastKnownLocaionListener(LastKnownLocationListener listener){
+    public void removeLastKnownLocationListener(LastKnownLocationListener listener){
         lastKnownLocationListeners.remove(listener);
     }
 ```
@@ -257,7 +257,7 @@ public class MainActivity extends AppCompatActivity implements LastKnownLocation
     @Override
     protected void onPause() {
         super.onPause();
-        locationService.removeLastKnownLocaionListener(this);
+        locationService.removeLastKnownLocationListener(this);
     }
 
     @Override
@@ -350,4 +350,214 @@ gist MainActivity
     }
 ```
 
-In Part 2 will add getting Location updates periodically and adding Geofences
+Now we have an initial location of the device. If we want to update the location as it changes we can subscribe to 
+location updates. First we have to create a LocationRequest:
+
+```
+    public LocationRequest getLocationRequest(){
+        LocationRequest locationRequest = new LocationRequest();
+        locationRequest.setInterval(10000);
+        locationRequest.setFastestInterval(5000);
+        locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        return locationRequest;
+    }
+```
+
+With setInterval we specify in which interval in milliseconds the app would prefer to get updates. It is not guaranteed 
+that we will receive updates in this specific interval though. The system merges different LocationRequest from different 
+apps and decides the interval it thinks fits best and updates all apps with this interval. It can be faster, slower 
+than we specified or even no updates if the device cant determine a new Location. Because of this have use 
+setFastestInterval to tell the system which is the fastest interval of updates that our app can handle. If for example 
+the system decides to update every second because another app needs it and our takes 2 seconds for some calculations 
+and rendering the results, the updates would crash our app. If we set the fastest intervall to 5 seconds the system 
+will just skip updating the app to match the 5 seconds interval.
+For the priority there are 4 choices:
+- PRIORITY_NO_POWER: The app won't trigger any updates but will receive updates triggered by other apps
+- PRIORITY_LOW_POWER: This is used for city level precision. The accuracy is about 10km.
+- PRIORITY_HIGH_ACCURACY: The best the device can do, but it consumes a lot of battery
+- PRIORITY_BALANCED_POWER_ACCURACY: This priority won't use GPS. Its about 100m accurate and is a good balance between 
+accuracy and power consumption.
+
+You should choose the least accurate Level you can get away with to save power.
+
+We need one more thing. When calling the locationClient's requestLocationUpdates Method we have to pass a 
+LocationCallBack. We will instantiate it in the LocationServices constructor and save it to a local variable. We need 
+to pass the exact same object to the LocationClients removeLocationUpdates Method to stop getting location updates.
+
+```
+    private LocationCallback locationCallback;
+
+    public LocationService(Context context) {
+        this.context = context;
+        locationClient = LocationServices.getFusedLocationProviderClient(context);
+        lastKnownLocationListeners = new HashSet<>();
+
+
+        locationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(LocationResult locationResult) {
+                if (locationResult == null) {
+                    return;
+                }
+                for (Location location : locationResult.getLocations()) {
+                    System.out.println(String.format("Received location update: latitude: %f, longitude: %f, time: %d",
+                            location.getLatitude(),
+                            location.getLongitude(),
+                            location.getTime()));
+                }
+            };
+        };
+    }
+```
+
+Now we finally have everything we need to request location updates:
+
+```
+    public void getLocationUpdates() {
+        if (checkPermissions()) {
+            locationClient.requestLocationUpdates(getLocationRequest(), locationCallback, null);
+        }
+    }
+```
+
+When we are done getting location updates we can stop by calling:
+
+```
+    public void stopLocationUpdates(){
+        locationClient.removeLocationUpdates(locationCallback);
+    }
+```
+
+Now we only have to call these methods from the MainActivity:
+
+```
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        locationService.addLastKnownLocationListener(this);
+        locationService.getLastKnownLocation(this);
+        locationService.getLocationUpdates();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        locationService.removeLastKnownLocationListener(this);
+        locationService.stopLocationUpdates();
+    }
+```
+
+When we start the app we can see the updates in the logs:
+
+Screenshot
+
+In my case its exactly every 10 seconds because there are no other apps running in my emulator.
+
+To finish the first part of this tutorial we will show the updated location to the user. Once again we create an 
+interface:
+
+```
+package com.example.locationservice.service;
+
+import android.location.Location;
+
+public interface LocationUpdateListener {
+    void onLocationUpdate(Location location);
+}
+```
+We add the listeners to the LocationService and call them in the locationCallback:
+
+```
+    private Set<LocationUpdateListener> locationUpdateListeners;
+
+    private LocationCallback locationCallback;
+
+    public LocationService(Context context) {
+        this.context = context;
+        locationClient = LocationServices.getFusedLocationProviderClient(context);
+        lastKnownLocationListeners = new HashSet<>();
+        locationUpdateListeners = new HashSet<>();
+
+
+        locationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(LocationResult locationResult) {
+                if (locationResult == null) {
+                    return;
+                }
+                for (Location location : locationResult.getLocations()) {
+                    for(LocationUpdateListener listener: locationUpdateListeners){
+                        listener.onLocationUpdate(location);
+                    }
+                }
+            };
+        };
+    }
+
+    public void addLocationUpdateListener(LocationUpdateListener listener){
+        locationUpdateListeners.add(listener);
+    }
+
+    public void removeLocationUpdateListener(LocationUpdateListener listener){
+        locationUpdateListeners.remove(listener);
+    }
+```
+
+We adjust the MainActivity and are ready to go
+
+```
+public class MainActivity extends AppCompatActivity implements LastKnownLocationListener, LocationUpdateListener {
+
+    private LocationService locationService;
+    private TextView lastKnownLocationView;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        lastKnownLocationView = findViewById(R.id.lastKnownLocation);
+
+        locationService = new LocationService(this);
+        locationService.askForPermissions(this);
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        locationService.addLastKnownLocationListener(this);
+        locationService.getLastKnownLocation(this);
+        locationService.addLocationUpdateListener(this);
+        locationService.getLocationUpdates();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        locationService.removeLastKnownLocationListener(this);
+        locationService.stopLocationUpdates();
+        locationService.removeLocationUpdateListener(this);
+    }
+
+    @Override
+    public void onLastKnownLocationReceived(Location location) {
+        setLocationToUi(location);
+    }
+
+    private void setLocationToUi(Location location) {
+        lastKnownLocationView.setText(String.format("Latitude: %f, Longitude: %f",
+                location.getLatitude(),
+                location.getLongitude()));
+    }
+
+    @Override
+    public void onLocationUpdate(Location location) {
+        setLocationToUi(location);
+    }
+}
+```
+
+Note that you can only see changes when the device moves and you get another output on the ui
+That concludes part 1. In part 2 we will learn how check the devices settings and how to add geofences
+
+https://developer.android.com/training/location/change-location-settings.html#java
